@@ -5,7 +5,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/kisom/cyonn/nnet"
 )
@@ -127,11 +130,17 @@ func XORTest(net *nnet.NeuralNetwork) float64 {
 	return float64(success) / 4.0
 }
 
-func XORTrainUntilSuccess(updateAt int, net *nnet.NeuralNetwork) {
+func improvement(cur, prev float64) float64 {
+	return math.Abs((cur - prev) / cur)
+}
+
+func XORTrainUntilSuccess(updateAt int, net *nnet.NeuralNetwork) int {
 	var iterations int
+	var lastChangeAt int
+	var lastErr float64
 
 	for {
-		display := (iterations % updateAt) == 0
+		display := (updateAt != 0) && (iterations%updateAt) == 0
 		var printEvery int
 
 		if display {
@@ -139,20 +148,61 @@ func XORTrainUntilSuccess(updateAt int, net *nnet.NeuralNetwork) {
 		}
 		_, err := XORTrainingSet(1, printEvery, net)
 		success := XORTest(net)
-		fmt.Printf("%10d> SUCC: %3.2f\t ERR: %8.5f\n", iterations, success, err)
 		if success > 0.9 && err < 0.01 {
 			break
+		}
+
+		if improvement(err, lastErr) > 0.001 {
+			lastChangeAt = iterations
+			lastErr = err
+		} else {
+			if (iterations - lastChangeAt) > 10000 {
+				fmt.Println("*** Stagnation detected: no change since",
+					lastChangeAt, "with current generation",
+					iterations)
+				fmt.Printf("%10d> SUCC: %3.2f\t ERR: %8.5f\n", iterations, success, err)
+				return -1
+			}
 		}
 
 		iterations++
 	}
 
 	fmt.Printf("Network fully trained after %d iterations\n", iterations)
+	return iterations
+}
+
+func parseConfig(config string) *nnet.NeuralNetwork {
+	confElts := strings.Split(config, "-")
+	if len(confElts) != 3 {
+		return nnet.New(2, 2, 1)
+	}
+
+	inputs, err := strconv.Atoi(confElts[0])
+	if err != nil {
+		return nnet.New(2, 2, 1)
+	}
+
+	hidden, err := strconv.Atoi(confElts[1])
+	if err != nil {
+		return nnet.New(2, 2, 1)
+	}
+
+	outputs, err := strconv.Atoi(confElts[2])
+	if err != nil {
+		return nnet.New(2, 2, 1)
+	}
+
+	fmt.Printf("%d-%d-%d initialised ", inputs, hidden, outputs)
+	return nnet.New(inputs, hidden, outputs)
 }
 
 func main() {
 	var iterations, printEvery, nets int
 	var learnRate float64
+	var config string
+
+	flag.StringVar(&config, "c", "2-2-1", "network configuration")
 	flag.IntVar(&iterations, "i", 131072, "number of training iterations")
 	flag.Float64Var(&learnRate, "l", nnet.DefaultLearningRate, "learning rate")
 	flag.IntVar(&nets, "n", 1, "number of neural networks to train")
@@ -161,24 +211,32 @@ func main() {
 	flag.Parse()
 
 	if *trainToSuccess {
+		iterations = 0
+		success := 0
 		for n := 0; n < nets; n++ {
-			net := nnet.New(2, 2, 1)
+			net := parseConfig(config)
 			net.LearningRate(learnRate)
-			fmt.Println("2-2-1 neural network initialised with learning rate", net.LearningRate(0))
-			XORTrainUntilSuccess(printEvery, net)
-			return
+			fmt.Println("with learning rate", net.LearningRate(0))
+			iter := XORTrainUntilSuccess(printEvery, net)
+			if iter != -1 {
+				iterations += iter
+				success++
+			}
 		}
+		fmt.Printf("%s: mean success rate %5.3f with mean training time %d generations\n",
+			config, float64(success)/float64(nets), iterations/success)
+		return
 	}
 
 	var successRate float64
 	for n := 0; n < nets; n++ {
-		net := nnet.New(2, 2, 1)
+		net := parseConfig(config)
 		net.LearningRate(learnRate)
-		fmt.Println("2-2-1 neural network initialised with learning rate", net.LearningRate(0))
+		fmt.Println("with learning rate", net.LearningRate(0))
 		XORTrainingSet(iterations, printEvery, net)
 		successRate += XORTest(net)
 	}
 
-	fmt.Printf("Average success rate for 2-2-1 network with a = %0.3f over %d iterations: %3.5f\n",
-		learnRate, iterations, successRate/float64(nets))
+	fmt.Printf("Average success rate for %s network with a = %0.3f over %d iterations: %3.5f\n",
+		config, learnRate, iterations, successRate/float64(nets))
 }
